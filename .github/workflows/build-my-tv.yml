@@ -22,6 +22,8 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
       - uses: gradle/actions/setup-gradle@v4
+      - name: My changes (IPTV apps + long-press to move)
+        run: git apply my-tv.patch
       - name: My settings
         run: |
           cat > profiles/my.local.json <<'EOF'
@@ -30,9 +32,13 @@ jobs:
             "prayer": {"method": 15, "label": "لجنة رؤية الهلال"},
             "team": {"name": "الهلال", "provider": "alhilal", "id": "929", "leagues": ["ksa.1"]},
             "apps": [
+              {"id": "com.nst.iptvsmarterstvbox", "name": "IPTV Smarters"},
+              {"id": "com.smarters.iptv", "name": "IPTV Smarters"},
+              {"id": "com.sneig.livedrama", "name": "Live Drama"},
+              {"id": "com.livedrama.app", "name": "Live Drama"},
+              {"id": "com.esaba.downloader", "name": "Downloader"},
               {"id": "com.google.android.youtube.tv", "name": "YouTube"},
-              {"id": "com.netflix.ninja", "name": "Netflix"},
-              {"id": "uk.co.bbc.iplayer", "name": "BBC iPlayer"}
+              {"id": "com.netflix.ninja", "name": "Netflix"}
             ],
             "panels": {"showPrayers": true, "showMatches": true, "showWeather": true}
           }
