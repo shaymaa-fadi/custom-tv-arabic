@@ -1,8 +1,14 @@
 diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
-index e5e4432..3258030 100644
+index e5e4432..b5c865e 100644
 --- a/app/src/main/AndroidManifest.xml
 +++ b/app/src/main/AndroidManifest.xml
-@@ -8,6 +8,10 @@
+@@ -3,11 +3,16 @@
+     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+     <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+     <queries>
+         <intent>
              <action android:name="android.intent.action.MAIN" />
              <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
          </intent>
@@ -13,116 +19,279 @@ index e5e4432..3258030 100644
          <intent>
              <action android:name="android.intent.action.MAIN" />
              <category android:name="android.intent.category.HOME" />
+diff --git a/app/src/main/assets/site/css/style.css b/app/src/main/assets/site/css/style.css
+index 29e90e2..e065a81 100644
+--- a/app/src/main/assets/site/css/style.css
++++ b/app/src/main/assets/site/css/style.css
+@@ -435,3 +435,39 @@ body.ambient-on .scrim { opacity: 0.55; }
+ #prefs .row { gap: 18px; flex-shrink: 0; }
+ #prefs .row > span { white-space: normal; overflow: visible; }
+ #prefs .row b { margin-left: 0; text-align: right; }
++
++/* ---------- app menu & move mode ---------- */
++.app-menu {
++  position: absolute;
++  left: 50%;
++  bottom: 300px;
++  transform: translateX(-50%);
++  min-width: 420px;
++  padding: 22px;
++  border-radius: 22px;
++  background: rgba(10, 14, 28, 0.92);
++  box-shadow: 0 0 0 1px var(--glass-line), 0 18px 48px rgba(0, 0, 0, 0.5);
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  z-index: 20;
++  direction: rtl;
++}
++.app-menu[hidden] { display: none; }
++.app-menu-title { font-size: 24px; color: var(--fg2); text-align: center; margin-bottom: 6px; }
++.menu-btn {
++  font: inherit;
++  font-size: 26px;
++  color: var(--fg);
++  background: var(--glass);
++  border: 0;
++  border-radius: 14px;
++  padding: 14px 20px;
++  text-align: center;
++}
++.menu-btn.focused { background: #fff; color: var(--ink); }
++.tile.moving {
++  transform: translateY(-14px) scale(1.06);
++  box-shadow: 0 0 0 5px var(--accent), 0 14px 28px rgba(0, 0, 0, 0.35);
++  z-index: 2;
++}
+diff --git a/app/src/main/assets/site/index.html b/app/src/main/assets/site/index.html
+index 1b4a452..315a39d 100644
+--- a/app/src/main/assets/site/index.html
++++ b/app/src/main/assets/site/index.html
+@@ -114,6 +114,14 @@
+       <button class="focusable amb-exit" data-action="close" data-i18n-label="Exit ambient mode" aria-label="Sair do modo ambiente"></button>
+     </section>
+ 
++    <section id="appMenu" class="app-menu scope" hidden>
++      <div class="app-menu-title" id="appMenuTitle"></div>
++      <button class="menu-btn focusable" data-menu="move">نقل</button>
++      <button class="menu-btn focusable" data-menu="hide">إخفاء من الشريط</button>
++      <button class="menu-btn focusable" data-menu="uninstall">حذف التطبيق</button>
++      <button class="menu-btn focusable" data-menu="cancel">إلغاء</button>
++    </section>
++
+     <div class="toast" id="toast"></div>
+   </div>
+ 
+diff --git a/app/src/main/assets/site/js/apps.js b/app/src/main/assets/site/js/apps.js
+index ee370a5..016379f 100644
+--- a/app/src/main/assets/site/js/apps.js
++++ b/app/src/main/assets/site/js/apps.js
+@@ -87,5 +87,9 @@
+     if (isTizen) { try { tizen.application.getCurrentApplication().exit(); } catch (e) { /* already exiting */ } }
+   }
+ 
+-  window.TVApps = { list: list, launch: launch, exit: exit, isTizen: !!isTizen, isAndroid: !!window.AndroidTV };
++  function uninstall(id) {
++    return !!(window.AndroidTV && window.AndroidTV.uninstall && window.AndroidTV.uninstall(id));
++  }
++
++  window.TVApps = { list: list, launch: launch, exit: exit, uninstall: uninstall, isTizen: !!isTizen, isAndroid: !!window.AndroidTV };
+ })();
 diff --git a/app/src/main/assets/site/js/main.js b/app/src/main/assets/site/js/main.js
-index 9e7f964..e0df090 100644
+index 9e7f964..7bf0c47 100644
 --- a/app/src/main/assets/site/js/main.js
 +++ b/app/src/main/assets/site/js/main.js
 @@ -32,6 +32,7 @@
      HOME_PANELS.forEach(function (panel) {
        if (typeof out[panel.key] !== 'boolean') out[panel.key] = true;
      });
-+    out.pinned = Array.isArray(s.pinned) ? s.pinned.filter(function (x) { return typeof x === 'string'; }) : [];
++    out.order = Array.isArray(s.order) ? s.order.filter(function (x) { return typeof x === 'string'; }) : [];
      return out;
    }
    function saveSettings() {
-@@ -172,6 +173,8 @@
+@@ -184,7 +185,12 @@
+     return null;
+   }
+   function sortApps(list) {
+-    return list.slice().sort(function (a, b) { return rank(a) - rank(b) || a.name.localeCompare(b.name); });
++    var base = list.slice().sort(function (a, b) { return rank(a) - rank(b) || a.name.localeCompare(b.name); });
++    var order = settings.order;
++    if (!order.length) return base;
++    // Apps the user arranged keep their place; new apps follow in the default order.
++    return base.map(function (a, i) { var o = order.indexOf(a.id); return { a: a, k: o >= 0 ? o : order.length + i }; })
++      .sort(function (x, y) { return x.k - y.k; }).map(function (x) { return x.a; });
+   }
  
-   // ---------- apps ----------
-   function rank(a) {
-+    var pinIndex = settings.pinned.indexOf(a.id);
-+    if (pinIndex >= 0) return pinIndex - 1000;
-     var homeIndex = homeIds.indexOf(a.id);
-     if (homeIndex >= 0) return homeIndex;
-     var hay = (a.id + ' ' + a.name).toLowerCase();
-@@ -443,6 +446,22 @@
+   // If an icon is a full opaque tile, extend its edge colour across the tile.
+@@ -434,6 +440,8 @@
+       el.classList.toggle('off', k < 0);
+       el.querySelector('b').innerHTML = k < 0 ? tr('Hidden') : I.ui.check;
+       renderGrid();
++    } else if (d.menu) {
++      menuChoice(d.menu);
+     } else if (d.action === 'home') {
+       rowOffset = 0; scrollGrid(null); focusEl(firstTile());
+     } else if (d.action === 'close') {
+@@ -443,6 +451,68 @@
      }
    }
  
-+  // Long-press OK on an app: move it to the front of the row (again on the first app: unpin it).
-+  function pinApp(el) {
-+    if (!el || !el.dataset.app || scope !== $('home')) return;
-+    var id = el.dataset.app, pins = settings.pinned, at = pins.indexOf(id);
-+    var app = allApps.filter(function (a) { return a.id === id; })[0], name = app ? app.name : '';
-+    var first = firstTile(), isFirst = first && first.dataset.app === id;
-+    if (at >= 0) pins.splice(at, 1);
-+    if (!(isFirst && at === 0)) pins.unshift(id);
-+    saveSettings();
++  // ---------- app menu (hold OK on an app) ----------
++  var menuApp = null, movingId = null;
++  function appName(id) { var app = allApps.filter(function (a) { return a.id === id; })[0]; return app ? app.name : ''; }
++  function tileFor(id) { return document.querySelector('.tile[data-app="' + CSS.escape(id) + '"]'); }
++  function openAppMenu(el) {
++    if (!el || !el.dataset.app || scope !== $('home') || movingId) return;
++    menuApp = el.dataset.app;
++    homeFocus = el;
++    $('appMenuTitle').textContent = appName(menuApp);
++    $('appMenu').hidden = false;
++    scope = $('appMenu');
++    focusEl($('appMenu').querySelector('.focusable'));
++  }
++  function menuChoice(choice) {
++    var id = menuApp;
++    closeOverlay();
++    if (!id || choice === 'cancel') return;
++    if (choice === 'move') startMove(id);
++    else if (choice === 'hide') {
++      if (settings.hidden.indexOf(id) < 0) settings.hidden.push(id);
++      saveSettings();
++      renderGrid();
++      focusEl(firstTile());
++      toast(appName(id) + ' — انخفى. ترجّعه من الإعدادات');
++    } else if (choice === 'uninstall') {
++      if (!window.TVApps.uninstall(id)) toast('ما يمكن حذف ' + appName(id) + ' من هنا');
++    }
++  }
++  function startMove(id) {
++    settings.order = sortApps(allApps).map(function (a) { return a.id; });
++    movingId = id;
++    var tile = tileFor(id);
++    if (tile) { tile.classList.add('moving'); focusEl(tile); }
++    toast('حرّكه يمين ويسار، وبعدين اضغط OK');
++  }
++  function moveKey(k) {
++    if (k === 13 || k === 27 || k === 8 || k === 10009 || k === 1013) { finishMove(); return; }
++    if (k !== 37 && k !== 39) return;
++    var tiles = $('grid').querySelectorAll('.tile'), me = tileFor(movingId);
++    if (!me) { finishMove(); return; }
++    var i = +me.dataset.idx, other = null;
++    [tiles[i - 1], tiles[i + 1]].forEach(function (t) {
++      if (!t) return;
++      if (k === 37 && t.offsetLeft < me.offsetLeft) other = t;
++      if (k === 39 && t.offsetLeft > me.offsetLeft) other = t;
++    });
++    if (!other) return;
++    var order = settings.order, a = order.indexOf(movingId), b = order.indexOf(other.dataset.app);
++    if (a < 0 || b < 0) return;
++    order[a] = other.dataset.app; order[b] = movingId;
 +    renderGrid();
-+    rowOffset = 0;
-+    var tile = document.querySelector('.tile[data-app="' + CSS.escape(id) + '"]');
-+    focusEl(tile || firstTile());
-+    toast(pins.indexOf(id) === 0 ? name + ' ← في البداية' : name + ' ← رجع لمكانه');
++    var tile = tileFor(movingId);
++    if (tile) { tile.classList.add('moving'); focusEl(tile); }
++  }
++  function finishMove() {
++    var tile = movingId && tileFor(movingId);
++    if (tile) tile.classList.remove('moving');
++    movingId = null;
++    saveSettings();
++    toast('انحفظ الترتيب');
 +  }
 +
    function back() {
      if (scope !== $('home')) { closeOverlay(); return; }
      var first = firstTile();
-@@ -457,6 +476,7 @@
+@@ -452,6 +522,8 @@
+ 
+   function remoteKey(k) {
+     if (scope === $('ambient')) { closeOverlay(); return; }
++    if (movingId) { moveKey(k); return; }
++    if (k === 1013) { openAppMenu(focused); return; }
+     if (k === 37) move('left');
+     else if (k === 38) move('up');
      else if (k === 39) move('right');
-     else if (k === 40) move('down');
-     else if (k === 13) activate(focused);
-+    else if (k === 1013) pinApp(focused);
-     else if (k === 10009 || k === 27 || k === 8) back();
-     else return;
-   }
+@@ -464,7 +536,7 @@
+     if ([37,38,39,40,13,10009,27,8].indexOf(e.keyCode) < 0) return;
+     remoteKey(e.keyCode); e.preventDefault();
+   });
+-  window.TVRemote = { key: remoteKey, home: function () { closeOverlay(); rowOffset = 0; focusEl(firstTile()); }, resume: function () { renderAll(); refreshWeather(false); loadApps(); } };
++  window.TVRemote = { key: remoteKey, home: function () { if (movingId) finishMove(); closeOverlay(); rowOffset = 0; focusEl(firstTile()); }, resume: function () { renderAll(); refreshWeather(false); loadApps(); } };
+   // Samsung remote pointer and desktop mouse.
+   document.addEventListener('mouseover', function (e) {
+     var el = e.target.closest && e.target.closest('.focusable');
 diff --git a/app/src/main/java/tv/customhome/launcher/MainActivity.java b/app/src/main/java/tv/customhome/launcher/MainActivity.java
-index 09b4c30..0be955a 100644
+index 09b4c30..748ac40 100644
 --- a/app/src/main/java/tv/customhome/launcher/MainActivity.java
 +++ b/app/src/main/java/tv/customhome/launcher/MainActivity.java
-@@ -108,8 +108,15 @@ public final class MainActivity extends Activity {
+@@ -108,17 +108,29 @@ public final class MainActivity extends Activity {
          web.evaluateJavascript("window.TVRemote && window.TVRemote.home()", null);
      }
  
-+    private boolean okLongPressed = false;
+-    @Override public boolean onKeyDown(int code, KeyEvent event) {
+-        int key = browserKey(code);
+-        if (key != 0) {
+-            web.evaluateJavascript("window.TVRemote && window.TVRemote.key(" + key + ")", null);
+-            return true;
+-        }
+-        return super.onKeyDown(code, event);
++    private boolean okLongSent = false;
 +
-     @Override public boolean onKeyDown(int code, KeyEvent event) {
-         int key = browserKey(code);
-+        if (key == 13) {
-+            // OK/Enter acts on release, so a long press can mean "move to front" instead.
-+            if (event.getRepeatCount() == 0) { okLongPressed = false; event.startTracking(); }
-+            return true;
-+        }
-         if (key != 0) {
-             web.evaluateJavascript("window.TVRemote && window.TVRemote.key(" + key + ")", null);
-             return true;
-@@ -117,8 +124,24 @@ public final class MainActivity extends Activity {
-         return super.onKeyDown(code, event);
++    private void sendKey(int key) {
++        web.evaluateJavascript("window.TVRemote && window.TVRemote.key(" + key + ")", null);
      }
  
-+    @Override public boolean onKeyLongPress(int code, KeyEvent event) {
-+        if (browserKey(code) == 13) {
-+            okLongPressed = true;
-+            web.evaluateJavascript("window.TVRemote && window.TVRemote.key(1013)", null);
-+            return true;
-+        }
-+        return super.onKeyLongPress(code, event);
-+    }
-+
-     @Override public boolean onKeyUp(int code, KeyEvent event) {
+-    @Override public boolean onKeyUp(int code, KeyEvent event) {
 -        return browserKey(code) != 0 || super.onKeyUp(code, event);
-+        int key = browserKey(code);
++    // Remote keys are taken here, before the WebView sees them, so holding OK can open the app menu.
++    @Override public boolean dispatchKeyEvent(KeyEvent event) {
++        int key = browserKey(event.getKeyCode());
++        if (key == 0 || web == null) return super.dispatchKeyEvent(event);
++        boolean down = event.getAction() == KeyEvent.ACTION_DOWN, up = event.getAction() == KeyEvent.ACTION_UP;
 +        if (key == 13) {
-+            if (!okLongPressed && !event.isCanceled())
-+                web.evaluateJavascript("window.TVRemote && window.TVRemote.key(13)", null);
-+            okLongPressed = false;
++            long held = event.getEventTime() - event.getDownTime();
++            if (down && event.getRepeatCount() == 0) okLongSent = false;
++            else if (down && !okLongSent && held >= 600) { okLongSent = true; sendKey(1013); }
++            else if (up) {
++                if (!okLongSent && !event.isCanceled()) sendKey(held >= 600 ? 1013 : 13);
++                okLongSent = false;
++            }
 +            return true;
 +        }
-+        return key != 0 || super.onKeyUp(code, event);
++        if (down && !(key == 1013 && event.getRepeatCount() > 0)) sendKey(key);
++        return true;
      }
  
      private int browserKey(int code) {
+@@ -130,6 +142,7 @@ public final class MainActivity extends Activity {
+             case KeyEvent.KEYCODE_ENTER:
+             case KeyEvent.KEYCODE_DPAD_CENTER: return 13;
+             case KeyEvent.KEYCODE_BACK: return 27;
++            case KeyEvent.KEYCODE_MENU: return 1013;
+             default: return 0;
+         }
+     }
 diff --git a/app/src/main/java/tv/customhome/launcher/NativeBridge.java b/app/src/main/java/tv/customhome/launcher/NativeBridge.java
-index 861878a..78fd872 100644
+index 861878a..a873fdf 100644
 --- a/app/src/main/java/tv/customhome/launcher/NativeBridge.java
 +++ b/app/src/main/java/tv/customhome/launcher/NativeBridge.java
-@@ -69,6 +69,15 @@ public final class NativeBridge {
+@@ -2,7 +2,9 @@ package tv.customhome.launcher;
+ 
+ import android.app.Activity;
+ import android.content.Intent;
++import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageManager;
++import android.net.Uri;
+ import android.content.pm.ResolveInfo;
+ import android.graphics.Bitmap;
+ import android.graphics.Canvas;
+@@ -69,6 +71,15 @@ public final class NativeBridge {
                  result.put(new JSONObject().put("id", pkg).put("name", info.loadLabel(manager).toString())
                          .put("icon", ICON_BASE + pkg + ".png"));
              }
 +            // Sideloaded phone-style apps (many IPTV players) have no TV launcher entry.
 +            for (ResolveInfo info : manager.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)) {
 +                String pkg = info.activityInfo.packageName;
-+                if ((info.activityInfo.applicationInfo.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue;
++                if ((info.activityInfo.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
 +                if (pkg.equals(activity.getPackageName()) || homePackages.contains(pkg) || !seen.add(pkg)) continue;
 +                apps.add(pkg);
 +                result.put(new JSONObject().put("id", pkg).put("name", info.loadLabel(manager).toString())
@@ -131,3 +300,24 @@ index 861878a..78fd872 100644
              TvInputManager managerInput = (TvInputManager) activity.getSystemService(Activity.TV_INPUT_SERVICE);
              if (managerInput != null) for (TvInputInfo input : managerInput.getTvInputList()) {
                  if (!input.isPassthroughInput()) continue;
+@@ -84,6 +95,20 @@ public final class NativeBridge {
+         return result.toString();
+     }
+ 
++    /** Opens the system uninstall confirmation for a user-installed app shown on Home. */
++    @JavascriptInterface public boolean uninstall(String id) {
++        if (!apps.contains(id)) return false;
++        try {
++            ApplicationInfo info = activity.getPackageManager().getApplicationInfo(id, 0);
++            if ((info.flags & ApplicationInfo.FLAG_SYSTEM) != 0) return false;
++        } catch (PackageManager.NameNotFoundException e) { return false; }
++        final Intent intent = new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + id)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++        activity.runOnUiThread(() -> {
++            try { activity.startActivity(intent); } catch (Exception ignored) { }
++        });
++        return true;
++    }
++
+     @JavascriptInterface public boolean launch(String id) {
+         Intent intent;
+         if ("system.settings".equals(id)) intent = new Intent(Settings.ACTION_SETTINGS);
