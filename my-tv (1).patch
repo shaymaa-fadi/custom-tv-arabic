@@ -1,0 +1,143 @@
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index e5e4432..3258030 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -8,6 +8,10 @@
+             <action android:name="android.intent.action.MAIN" />
+             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+         </intent>
++        <intent>
++            <action android:name="android.intent.action.MAIN" />
++            <category android:name="android.intent.category.LAUNCHER" />
++        </intent>
+         <intent>
+             <action android:name="android.intent.action.MAIN" />
+             <category android:name="android.intent.category.HOME" />
+diff --git a/app/src/main/assets/site/js/main.js b/app/src/main/assets/site/js/main.js
+index 9e7f964..e0df090 100644
+--- a/app/src/main/assets/site/js/main.js
++++ b/app/src/main/assets/site/js/main.js
+@@ -32,6 +32,7 @@
+     HOME_PANELS.forEach(function (panel) {
+       if (typeof out[panel.key] !== 'boolean') out[panel.key] = true;
+     });
++    out.pinned = Array.isArray(s.pinned) ? s.pinned.filter(function (x) { return typeof x === 'string'; }) : [];
+     return out;
+   }
+   function saveSettings() {
+@@ -172,6 +173,8 @@
+ 
+   // ---------- apps ----------
+   function rank(a) {
++    var pinIndex = settings.pinned.indexOf(a.id);
++    if (pinIndex >= 0) return pinIndex - 1000;
+     var homeIndex = homeIds.indexOf(a.id);
+     if (homeIndex >= 0) return homeIndex;
+     var hay = (a.id + ' ' + a.name).toLowerCase();
+@@ -443,6 +446,22 @@
+     }
+   }
+ 
++  // Long-press OK on an app: move it to the front of the row (again on the first app: unpin it).
++  function pinApp(el) {
++    if (!el || !el.dataset.app || scope !== $('home')) return;
++    var id = el.dataset.app, pins = settings.pinned, at = pins.indexOf(id);
++    var app = allApps.filter(function (a) { return a.id === id; })[0], name = app ? app.name : '';
++    var first = firstTile(), isFirst = first && first.dataset.app === id;
++    if (at >= 0) pins.splice(at, 1);
++    if (!(isFirst && at === 0)) pins.unshift(id);
++    saveSettings();
++    renderGrid();
++    rowOffset = 0;
++    var tile = document.querySelector('.tile[data-app="' + CSS.escape(id) + '"]');
++    focusEl(tile || firstTile());
++    toast(pins.indexOf(id) === 0 ? name + ' ← في البداية' : name + ' ← رجع لمكانه');
++  }
++
+   function back() {
+     if (scope !== $('home')) { closeOverlay(); return; }
+     var first = firstTile();
+@@ -457,6 +476,7 @@
+     else if (k === 39) move('right');
+     else if (k === 40) move('down');
+     else if (k === 13) activate(focused);
++    else if (k === 1013) pinApp(focused);
+     else if (k === 10009 || k === 27 || k === 8) back();
+     else return;
+   }
+diff --git a/app/src/main/java/tv/customhome/launcher/MainActivity.java b/app/src/main/java/tv/customhome/launcher/MainActivity.java
+index 09b4c30..8da2ab2 100644
+--- a/app/src/main/java/tv/customhome/launcher/MainActivity.java
++++ b/app/src/main/java/tv/customhome/launcher/MainActivity.java
+@@ -108,8 +108,15 @@ public final class MainActivity extends Activity {
+         web.evaluateJavascript("window.TVRemote && window.TVRemote.home()", null);
+     }
+ 
++    private boolean okLongPressed = false;
++
+     @Override public boolean onKeyDown(int code, KeyEvent event) {
+         int key = browserKey(code);
++        if (key == 13) {
++            // OK/Enter acts on release, so a long press can mean "move to front" instead.
++            if (event.getRepeatCount() == 0) { okLongPressed = false; event.startTracking(); }
++            return true;
++        }
+         if (key != 0) {
+             web.evaluateJavascript("window.TVRemote && window.TVRemote.key(" + key + ")", null);
+             return true;
+@@ -117,8 +124,26 @@ public final class MainActivity extends Activity {
+         return super.onKeyDown(code, event);
+     }
+ 
++    @Override public boolean onKeyLongPress(int code, KeyEvent event) {
++        if (browserKey(code) == 13) {
++            okLongPressed = true;
++            web.evaluateJavascript("window.TVRemote && window.TVRemote.key(1013)", null);
++            return true;
++        }
++        return super.onKeyLongPress(code, event);
++    }
++
+     @Override public boolean onKeyUp(int code, KeyEvent event) {
+-        return browserKey(code) != 0 || super.onKeyUp(code, event);
++        int key = browserKey(code);
++        if (key == 13) {
++            // Some remotes never auto-repeat OK, so also measure how long it was held.
++            boolean held = event.getEventTime() - event.getDownTime() >= 600;
++            if (!okLongPressed && !event.isCanceled())
++                web.evaluateJavascript("window.TVRemote && window.TVRemote.key(" + (held ? 1013 : 13) + ")", null);
++            okLongPressed = false;
++            return true;
++        }
++        return key != 0 || super.onKeyUp(code, event);
+     }
+ 
+     private int browserKey(int code) {
+@@ -130,6 +155,7 @@ public final class MainActivity extends Activity {
+             case KeyEvent.KEYCODE_ENTER:
+             case KeyEvent.KEYCODE_DPAD_CENTER: return 13;
+             case KeyEvent.KEYCODE_BACK: return 27;
++            case KeyEvent.KEYCODE_MENU: return 1013;
+             default: return 0;
+         }
+     }
+diff --git a/app/src/main/java/tv/customhome/launcher/NativeBridge.java b/app/src/main/java/tv/customhome/launcher/NativeBridge.java
+index 861878a..78fd872 100644
+--- a/app/src/main/java/tv/customhome/launcher/NativeBridge.java
++++ b/app/src/main/java/tv/customhome/launcher/NativeBridge.java
+@@ -69,6 +69,15 @@ public final class NativeBridge {
+                 result.put(new JSONObject().put("id", pkg).put("name", info.loadLabel(manager).toString())
+                         .put("icon", ICON_BASE + pkg + ".png"));
+             }
++            // Sideloaded phone-style apps (many IPTV players) have no TV launcher entry.
++            for (ResolveInfo info : manager.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)) {
++                String pkg = info.activityInfo.packageName;
++                if ((info.activityInfo.applicationInfo.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue;
++                if (pkg.equals(activity.getPackageName()) || homePackages.contains(pkg) || !seen.add(pkg)) continue;
++                apps.add(pkg);
++                result.put(new JSONObject().put("id", pkg).put("name", info.loadLabel(manager).toString())
++                        .put("icon", ICON_BASE + pkg + ".png"));
++            }
+             TvInputManager managerInput = (TvInputManager) activity.getSystemService(Activity.TV_INPUT_SERVICE);
+             if (managerInput != null) for (TvInputInfo input : managerInput.getTvInputList()) {
+                 if (!input.isPassthroughInput()) continue;
